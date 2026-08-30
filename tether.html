@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tether · 羁绊</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #05060f;
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    color: #e8ecff;
+    cursor: none;
+  }
+  #game { display: block; width: 100vw; height: 100vh; }
+  /* 自定义光标 */
+  #cursor {
+    position: fixed; pointer-events: none; z-index: 50;
+    width: 14px; height: 14px; margin: -7px 0 0 -7px;
+    border: 1.5px solid rgba(120,200,255,.8);
+    border-radius: 50%;
+    box-shadow: 0 0 12px rgba(120,200,255,.6);
+    transition: opacity .2s;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="cursor"></div>
+<script>
+/* =========================================================
+   Tether · 羁绊  —— 100% 原创游戏
+   玩法：鼠标控制锚球，弹性的游星球通过绳索连接在身后摆动。
+        用摆动的游星去触碰星辰得分，躲避红色尖刺。
+   核心物理：弹簧约束 + 速度阻尼 + 最大绳长硬约束
+   ========================================================= */
+(function () {
+  'use strict';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const cursorEl = document.getElementById('cursor');
+
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- 输入 ----------
+  const mouse = { x: W / 2, y: H / 2, down: false, active: false };
+  function setMouse(e) {
+    const t = e.touches ? e.touches[0] : e;
+    mouse.x = t.clientX; mouse.y = t.clientY; mouse.active = true;
+    cursorEl.style.left = mouse.x + 'px';
+    cursorEl.style.top = mouse.y + 'px';
+  }
+  window.addEventListener('mousemove', setMouse);
+  window.addEventListener('touchmove', e => { setMouse(e); e.preventDefault(); }, { passive: false });
+  window.addEventListener('touchstart', e => { setMouse(e); mouse.down = true; }, { passive: true });
+  window.addEventListener('touchend', () => mouse.down = false);
+  window.addEventListener('mousedown', () => mouse.down = true);
+  window.addEventListener('mouseup', () => mouse.down = false);
+
+  // ---------- 音频（Web Audio 合成，无外部资源） ----------
+  let audioCtx = null;
+  function ac() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { audioCtx = null; }
+    }
+    return audioCtx;
+  }
+  function beep(freq, dur, type, vol, slideTo) {
+    const a = ac(); if (!a) return;
+    const o = a.createOscillator(), g = a.createGain();
+    o.type = type || 'sine';
+    o.frequency.setValueAtTime(freq, a.currentTime);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, a.currentTime + dur);
+    g.gain.setValueAtTime(0.0001, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(vol || 0.15, a.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + dur);
+    o.connect(g); g.connect(a.destination);
+    o.start(); o.stop(a.currentTime + dur + 0.02);
+  }
+  const SFX = {
+    collect: () => { beep(660, 0.12, 'triangle', 0.18, 1320); },
+    hit:     () => { beep(180, 0.25, 'sawtooth', 0.20, 60); },
+    start:   () => { beep(440, 0.1, 'sine', 0.15, 880); },
+    over:    () => { beep(300, 0.5, 'sawtooth', 0.2, 80); }
+  };
+
+  // ---------- 工具 ----------
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
+  const TAU = Math.PI * 2;
+
+  // ---------- 实体 ----------
+  // 锚球（玩家直接控制）
+  const anchor = {
+    x: W / 2, y: H / 2, px: W / 2, py: H / 2,
+    vx: 0, vy: 0, r: 11, hue: 205
+  };
+  // 游星球（弹簧摆动，用来收集星辰）
+  const comet = {
+    x: W / 2 + 120, y: H / 2, vx: 0, vy: 0, r: 9, hue: 320,
+    trail: []
+  };
+
+  // 绳索参数
+  const TETHER = {
+    rest: 130,        // 自然长度
+    k: 0.18,          // 弹簧刚度
+    damping: 0.965,   // 速度阻尼
+    maxLen: 220,      // 最大硬约束长度
+    minLen: 60        // 最小硬约束长度（防止穿过）
+  };
+
+  let stars = [];      // 星辰（收集物）
+  let hazards = [];    // 危险物
+  let particles = [];  // 粒子特效
+  let floats = [];     // 飘字
+
+  // ---------- 游戏状态 ----------
+  const STATE = { MENU: 0, PLAY: 1, OVER: 2 };
+  let state = STATE.MENU;
+  let score = 0, best = 0, lives = 3, time = 0;
+  let spawnTStar = 0, spawnTHaz = 0;
+  let shake = 0, invuln = 0;
+  let comboCount = 0, comboTimer = 0;
+
+  try { best = parseInt(localStorage.getItem('tether_best') || '0', 10) || 0; } catch (e) {}
+
+  function reset() {
+    score = 0; lives = 3; time = 0;
+    stars.length = 0; hazards.length = 0;
+    particles.length = 0; floats.length = 0;
+    spawnTStar = 0; spawnTHaz = 0;
+    shake = 0; invuln = 90; comboCount = 0; comboTimer = 0;
+    anchor.x = W / 2; anchor.y = H / 2; anchor.px = anchor.x; anchor.py = anchor.y;
+    comet.x = W / 2 + 120; comet.y = H / 2; comet.vx = 0; comet.vy = 0; comet.trail.length = 0;
+  }
+
+  // ---------- 生成 ----------
+  function spawnStar() {
+    // 避开锚球附近，鼓励玩家用游星去够
+    let x, y, tries = 0;
+    do {
+      x = rand(60, W - 60); y = rand(60, H - 60);
+      tries++;
+    } while (tries < 20 && dist2(x, y, anchor.x, anchor.y) < 90 * 90);
+    stars.push({
+      x, y, r: 9, rot: rand(0, TAU), pulse: rand(0, TAU),
+      born: 0, life: rand(8, 14), // 自动消失
+      hue: rand(45, 60)
+    });
+  }
+  function spawnHazard() {
+    // 从屏幕边缘漂入
+    const side = Math.floor(rand(0, 4));
+    let x, y, vx, vy;
+    const sp = rand(0.5, 1.4) + time * 0.005;
+    if (side === 0) { x = rand(0, W); y = -30; vx = rand(-0.4, 0.4); vy = sp; }
+    else if (side === 1) { x = W + 30; y = rand(0, H); vx = -sp; vy = rand(-0.4, 0.4); }
+    else if (side === 2) { x = rand(0, W); y = H + 30; vx = rand(-0.4, 0.4); vy = -sp; }
+    else { x = -30; y = rand(0, H); vx = sp; vy = rand(-0.4, 0.4); }
+    hazards.push({
+      x, y, vx, vy, r: rand(11, 16), rot: rand(0, TAU),
+      spin: rand(-0.04, 0.04), spikes: Math.floor(rand(5, 8))
+    });
+  }
+
+  function burst(x, y, n, hue, spd) {
+    for (let i = 0; i < n; i++) {
+      const a = rand(0, TAU), s = rand(spd * 0.3, spd);
+      particles.push({
+        x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+        life: rand(0.4, 0.9), age: 0, hue: hue + rand(-15, 15),
+        size: rand(1.5, 3.5)
+      });
+    }
+  }
+  function addFloat(x, y, text, hue) {
+    floats.push({ x, y, text, hue, age: 0, life: 1.0 });
+  }
+
+  // ---------- 更新 ----------
+  function update(dt) {
+    time += dt;
+
+    // 锚球：平滑跟随鼠标（带轻微惯性）
+    anchor.px = anchor.x; anchor.py = anchor.y;
+    const follow = 0.22;
+    anchor.x += (mouse.x - anchor.x) * follow;
+    anchor.y += (mouse.y - anchor.y) * follow;
+    anchor.vx = anchor.x - anchor.px;
+    anchor.vy = anchor.y - anchor.py;
+    anchor.x = clamp(anchor.x, anchor.r, W - anchor.r);
+    anchor.y = clamp(anchor.y, anchor.r, H - anchor.r);
+
+    // 游星球：弹簧物理
+    let dx = anchor.x - comet.x;
+    let dy = anchor.y - comet.y;
+    let d = Math.hypot(dx, dy) || 0.0001;
+    // 弹簧力：只在拉伸超过自然长度时回拉（单边弹簧，更像绳子）
+    const stretch = d - TETHER.rest;
+    if (stretch > 0) {
+      const f = TETHER.k * stretch;
+      comet.vx += (dx / d) * f;
+      comet.vy += (dy / d) * f;
+    }
+    // 轻微向心力使游星保持轨道感（让玩法更可控）
+    comet.vx += (dx / d) * 0.02;
+    comet.vy += (dy / d) * 0.02;
+    // 阻尼
+    comet.vx *= TETHER.damping;
+    comet.vy *= TETHER.damping;
+    // 速度上限
+    const maxV = 18;
+    const sp = Math.hypot(comet.vx, comet.vy);
+    if (sp > maxV) { comet.vx = comet.vx / sp * maxV; comet.vy = comet.vy / sp * maxV; }
+    comet.x += comet.vx;
+    comet.y += comet.vy;
+
+    // 硬约束：不能超过最大绳长 / 小于最小绳长
+    dx = comet.x - anchor.x; dy = comet.y - anchor.y;
+    d = Math.hypot(dx, dy) || 0.0001;
+    if (d > TETHER.maxLen) {
+      comet.x = anchor.x + dx / d * TETHER.maxLen;
+      comet.y = anchor.y + dy / d * TETHER.maxLen;
+      // 沿绳方向速度归零（反弹小余量）
+      const nx = dx / d, ny = dy / d;
+      const vn = comet.vx * nx + comet.vy * ny;
+      if (vn > 0) { comet.vx -= vn * nx * 1.2; comet.vy -= vn * ny * 1.2; }
+    } else if (d < TETHER.minLen) {
+      comet.x = anchor.x + dx / d * TETHER.minLen;
+      comet.y = anchor.y + dy / d * TETHER.minLen;
+    }
+
+    // 游星拖尾
+    comet.trail.push({ x: comet.x, y: comet.y, a: 1 });
+    if (comet.trail.length > 22) comet.trail.shift();
+    for (let i = 0; i < comet.trail.length; i++) comet.trail[i].a *= 0.92;
+
+    // 无敌帧
+    if (invuln > 0) invuln--;
+    // 连击计时
+    if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) comboCount = 0; }
+
+    // 生成节奏（随时间加快）
+    const difficulty = 1 + time * 0.04;
+    spawnTStar -= dt;
+    if (spawnTStar <= 0 && stars.length < 6) { spawnStar(); spawnTStar = rand(1.2, 2.2) / Math.min(difficulty, 2.5); }
+    spawnTHaz -= dt;
+    if (spawnTHaz <= 0) { spawnHazard(); spawnTHaz = rand(1.6, 2.8) / Math.min(difficulty, 3); }
+
+    // 星辰更新 + 收集判定（游星触碰得分，锚球触碰给小分）
+    for (let i = stars.length - 1; i >= 0; i--) {
+      const s = stars[i];
+      s.rot += 0.02; s.pulse += 0.08; s.born += dt; s.life -= dt;
+      if (s.life <= 0) { stars.splice(i, 1); continue; }
+      const hitComet = dist2(s.x, s.y, comet.x, comet.y) < (s.r + comet.r) * (s.r + comet.r);
+      const hitAnchor = !hitComet && dist2(s.x, s.y, anchor.x, anchor.y) < (s.r + anchor.r) * (s.r + anchor.r);
+      if (hitComet || hitAnchor) {
+        const gain = hitComet ? 10 : 4;
+        comboCount = hitComet ? comboCount + 1 : 0;
+        comboTimer = hitComet ? 2.0 : comboTimer;
+        const mult = 1 + Math.floor(comboCount / 3);
+        const total = gain * mult;
+        score += total;
+        addFloat(s.x, s.y, '+' + total + (mult > 1 ? ' x' + mult : ''), s.hue);
+        burst(s.x, s.y, hitComet ? 18 : 10, s.hue, hitComet ? 5 : 3);
+        if (hitComet) SFX.collect();
+        stars.splice(i, 1);
+      }
+    }
+
+    // 危险物更新 + 碰撞
+    for (let i = hazards.length - 1; i >= 0; i--) {
+      const h = hazards[i];
+      h.x += h.vx; h.y += h.vy; h.rot += h.spin;
+      // 出屏移除
+      if (h.x < -60 || h.x > W + 60 || h.y < -60 || h.y > H + 60) { hazards.splice(i, 1); continue; }
+      if (invuln <= 0) {
+        const rh = (h.r + comet.r) * 0.8;
+        if (dist2(h.x, h.y, comet.x, comet.y) < rh * rh ||
+            dist2(h.x, h.y, anchor.x, anchor.y) < (h.r + anchor.r) * (h.r + anchor.r) * 0.85) {
+          // 受伤
+          lives--; invuln = 100; shake = 16; comboCount = 0;
+          burst(comet.x, comet.y, 24, 0, 6);
+          burst(anchor.x, anchor.y, 18, 0, 5);
+          SFX.hit();
+          addFloat(comet.x, comet.y - 20, '-1', 0);
+          // 把游星拉回，避免连续撞击
+          comet.vx = (comet.x - h.x) * 0.3; comet.vy = (comet.y - h.y) * 0.3;
+          if (lives <= 0) {
+            state = STATE.OVER;
+            SFX.over();
+            if (score > best) { best = score; try { localStorage.setItem('tether_best', String(best)); } catch (e) {} }
+          }
+        }
+      }
+    }
+
+    // 粒子
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.age += dt;
+      p.x += p.vx; p.y += p.vy;
+      p.vx *= 0.94; p.vy *= 0.94;
+      if (p.age >= p.life) particles.splice(i, 1);
+    }
+    // 飘字
+    for (let i = floats.length - 1; i >= 0; i--) {
+      const f = floats[i];
+      f.age += dt; f.y -= 0.6;
+      if (f.age >= f.life) floats.splice(i, 1);
+    }
+
+    if (shake > 0) shake *= 0.86;
+  }
+
+  // ---------- 渲染 ----------
+  function drawBackground() {
+    // 深空渐变
+    const g = ctx.createRadialGradient(W / 2, H / 2, 50, W / 2, H / 2, Math.max(W, H) * 0.7);
+    g.addColorStop(0, '#0c1030');
+    g.addColorStop(1, '#05060f');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // 星点（伪静态，用 seed）
+    ctx.fillStyle = 'rgba(180,200,255,0.5)';
+    for (let i = 0; i < 80; i++) {
+      const sx = (Math.sin(i * 12.9898) * 43758.5453 % 1 + 1) % 1 * W;
+      const sy = (Math.sin(i * 78.233) * 43758.5453 % 1 + 1) % 1 * H;
+      const tw = 0.4 + 0.6 * Math.abs(Math.sin(time * 1.5 + i));
+      ctx.globalAlpha = tw * 0.5;
+      ctx.fillRect(sx, sy, 1.4, 1.4);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawTether() {
+    // 弹性绳索：发光曲线，随张力变红
+    const dx = comet.x - anchor.x, dy = comet.y - anchor.y;
+    const d = Math.hypot(dx, dy);
+    const tension = clamp((d - TETHER.rest) / (TETHER.maxLen - TETHER.rest), 0, 1);
+    const hue = 200 - tension * 200; // 蓝->红
+    ctx.save();
+    ctx.lineCap = 'round';
+    // 外发光
+    ctx.strokeStyle = `hsla(${hue}, 90%, 60%, 0.25)`;
+    ctx.lineWidth = 9;
+    ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(comet.x, comet.y); ctx.stroke();
+    // 主体
+    ctx.strokeStyle = `hsla(${hue}, 95%, 70%, 0.9)`;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(comet.x, comet.y); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawOrb(o, coreHue, glow) {
+    ctx.save();
+    // 光晕
+    const grd = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, glow);
+    grd.addColorStop(0, `hsla(${coreHue},100%,70%,0.55)`);
+    grd.addColorStop(1, `hsla(${coreHue},100%,60%,0)`);
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(o.x, o.y, glow, 0, TAU); ctx.fill();
+    // 核心
+    ctx.fillStyle = `hsl(${coreHue},100%,85%)`;
+    ctx.shadowColor = `hsl(${coreHue},100%,60%)`;
+    ctx.shadowBlur = 18;
+    ctx.beginPath(); ctx.arc(o.x, o.y, o.r, 0, TAU); ctx.fill();
+    // 高光
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath(); ctx.arc(o.x - o.r * 0.3, o.y - o.r * 0.3, o.r * 0.35, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawCometTrail() {
+    for (let i = 0; i < comet.trail.length; i++) {
+      const t = comet.trail[i];
+      const p = i / comet.trail.length;
+      ctx.fillStyle = `hsla(${comet.hue},100%,70%,${t.a * p * 0.6})`;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, comet.r * (0.3 + p * 0.7), 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  function drawStar(s) {
+    const sc = 1 + Math.sin(s.pulse) * 0.12;
+    const fade = s.life < 2 ? s.life / 2 : 1;
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.rot);
+    ctx.scale(sc, sc);
+    ctx.globalAlpha = fade;
+    // 光晕
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 26);
+    g.addColorStop(0, `hsla(${s.hue},100%,70%,0.5)`);
+    g.addColorStop(1, `hsla(${s.hue},100%,60%,0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, 26, 0, TAU); ctx.fill();
+    // 四芒星
+    ctx.fillStyle = `hsl(${s.hue},100%,80%)`;
+    ctx.shadowColor = `hsl(${s.hue},100%,60%)`;
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    const R = s.r + 4, r = s.r * 0.4;
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * TAU;
+      const rad = i % 2 === 0 ? R : r;
+      ctx.lineTo(Math.cos(ang) * rad, Math.sin(ang) * rad);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawHazard(h) {
+    ctx.save();
+    ctx.translate(h.x, h.y);
+    ctx.rotate(h.rot);
+    // 危险红光
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, h.r + 14);
+    g.addColorStop(0, 'rgba(255,40,60,0.45)');
+    g.addColorStop(1, 'rgba(255,40,60,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, h.r + 14, 0, TAU); ctx.fill();
+    // 尖刺多边形
+    ctx.fillStyle = '#ff2d4a';
+    ctx.shadowColor = '#ff0030';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    const R = h.r, r = h.r * 0.45;
+    for (let i = 0; i < h.spikes * 2; i++) {
+      const ang = (i / (h.spikes * 2)) * TAU;
+      const rad = i % 2 === 0 ? R : r;
+      ctx.lineTo(Math.cos(ang) * rad, Math.sin(ang) * rad);
+    }
+    ctx.closePath();
+    ctx.fill();
+    // 中心暗核
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#3a0010';
+    ctx.beginPath(); ctx.arc(0, 0, h.r * 0.3, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const a = 1 - p.age / p.life;
+      ctx.fillStyle = `hsla(${p.hue},100%,65%,${a})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.size * a, 0, TAU); ctx.fill();
+    }
+  }
+  function drawFloats() {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 18px sans-serif';
+    for (const f of floats) {
+      const a = 1 - f.age / f.life;
+      ctx.fillStyle = `hsla(${f.hue},100%,75%,${a})`;
+      ctx.shadowColor = `hsla(${f.hue},100%,60%,${a})`;
+      ctx.shadowBlur = 8;
+      ctx.fillText(f.text, f.x, f.y);
+    }
+    ctx.restore();
+  }
+
+  function drawHUD() {
+    ctx.save();
+    ctx.shadowBlur = 0;
+    // 分数
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#cfe0ff';
+    ctx.font = 'bold 26px sans-serif';
+    ctx.fillText('分数 ' + score, 20, 38);
+    ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#7e8bb8';
+    ctx.fillText('最高 ' + best, 20, 58);
+    // 生命
+    ctx.textAlign = 'right';
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i < lives ? '#ff5a7a' : 'rgba(255,90,122,0.18)';
+      ctx.beginPath(); ctx.arc(W - 22 - i * 22, 30, 7, 0, TAU); ctx.fill();
+    }
+    // 连击
+    if (comboCount >= 3) {
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillStyle = `hsl(${50 + comboCount * 6},100%,70%)`;
+      ctx.shadowColor = `hsl(${50 + comboCount * 6},100%,60%)`;
+      ctx.shadowBlur = 12;
+      ctx.fillText('连击 x' + (1 + Math.floor(comboCount / 3)), W / 2, 42);
+    }
+    ctx.restore();
+  }
+
+  function drawMenu() {
+    ctx.save();
+    ctx.textAlign = 'center';
+    // 标题
+    const t = time;
+    ctx.font = 'bold 72px sans-serif';
+    const grd = ctx.createLinearGradient(W / 2 - 160, 0, W / 2 + 160, 0);
+    grd.addColorStop(0, '#5ec8ff'); grd.addColorStop(1, '#ff6ec7');
+    ctx.fillStyle = grd;
+    ctx.shadowColor = 'rgba(120,180,255,0.5)'; ctx.shadowBlur = 24;
+    ctx.fillText('Tether', W / 2, H / 2 - 60);
+    ctx.shadowBlur = 0;
+    ctx.font = '20px sans-serif';
+    ctx.fillStyle = '#9fb0e0';
+    ctx.fillText('羁  绊', W / 2, H / 2 - 24);
+
+    // 说明
+    ctx.font = '15px sans-serif';
+    ctx.fillStyle = '#8290bd';
+    const lines = [
+      '移动鼠标操控发光锚球，游星球会通过弹性绳索在身后摆动',
+      '用摆动的「游星」去触碰金色星辰得分（连击翻倍）',
+      '躲避红色尖刺，任意一球碰到都会受伤',
+      '游星触星 +10  ·  锚球触星 +4  ·  连击每 3 次倍率 +1'
+    ];
+    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], W / 2, H / 2 + 16 + i * 24);
+
+    // 开始提示（闪烁）
+    const blink = 0.5 + 0.5 * Math.sin(t * 3);
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillStyle = `rgba(180,220,255,${blink})`;
+    ctx.fillText('点击 / 触摸 开始', W / 2, H / 2 + 140);
+    if (best > 0) {
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#7e8bb8';
+      ctx.fillText('最高分 ' + best, W / 2, H / 2 + 172);
+    }
+    ctx.restore();
+  }
+
+  function drawOver() {
+    ctx.save();
+    ctx.fillStyle = 'rgba(5,6,15,0.55)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 56px sans-serif';
+    ctx.fillStyle = '#ff6ec7';
+    ctx.shadowColor = 'rgba(255,90,160,0.5)'; ctx.shadowBlur = 20;
+    ctx.fillText('羁绊断裂', W / 2, H / 2 - 40);
+    ctx.shadowBlur = 0;
+    ctx.font = '22px sans-serif';
+    ctx.fillStyle = '#cfe0ff';
+    ctx.fillText('本局得分  ' + score, W / 2, H / 2 + 6);
+    ctx.font = '16px sans-serif';
+    ctx.fillStyle = score >= best && score > 0 ? '#ffd24a' : '#7e8bb8';
+    ctx.fillText(score >= best && score > 0 ? '★ 新纪录 ★' : '最高分  ' + best, W / 2, H / 2 + 34);
+    const blink = 0.5 + 0.5 * Math.sin(time * 3);
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillStyle = `rgba(180,220,255,${blink})`;
+    ctx.fillText('点击重新开始', W / 2, H / 2 + 80);
+    ctx.restore();
+  }
+
+  // ---------- 主循环 ----------
+  let last = performance.now();
+  function loop(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05; // 防止切后台大跳
+
+    // 菜单态也让锚球/游星动起来做演示
+    if (state === STATE.MENU) {
+      // 让锚球做缓慢圆周以展示羁绊摆动
+      const cx = W / 2, cy = H / 2 + 220;
+      mouse.x = cx + Math.cos(time * 0.8) * 90;
+      mouse.y = cy + Math.sin(time * 0.8) * 50;
+      cursorEl.style.left = mouse.x + 'px';
+      cursorEl.style.top = mouse.y + 'px';
+      update(dt);
+    } else if (state === STATE.PLAY) {
+      update(dt);
+    } else {
+      // OVER: 仍更新粒子
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.age += dt; p.x += p.vx; p.y += p.vy; p.vx *= 0.94; p.vy *= 0.94;
+        if (p.age >= p.life) particles.splice(i, 1);
+      }
+      time += dt;
+    }
+
+    // 渲染
+    ctx.save();
+    if (shake > 0.5) {
+      ctx.translate(rand(-shake, shake), rand(-shake, shake));
+    }
+    drawBackground();
+
+    // 游星拖尾与绳索（菜单/游戏中都画）
+    if (state !== STATE.OVER || true) {
+      drawCometTrail();
+      drawTether();
+      // 无敌闪烁
+      const showOrbs = invuln <= 0 || Math.floor(invuln / 6) % 2 === 0;
+      if (showOrbs) {
+        drawOrb(anchor, anchor.hue, 26);
+        drawOrb(comet, comet.hue, 30);
+      }
+    }
+
+    if (state === STATE.PLAY || state === STATE.OVER) {
+      for (const s of stars) drawStar(s);
+      for (const h of hazards) drawHazard(h);
+    }
+    drawParticles();
+    drawFloats();
+
+    ctx.restore();
+
+    if (state === STATE.PLAY) drawHUD();
+    if (state === STATE.MENU) drawMenu();
+    if (state === STATE.OVER) drawOver();
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // ---------- 输入处理状态切换 ----------
+  function handleAction() {
+    if (state === STATE.MENU) {
+      ac(); // 唤醒音频
+      SFX.start();
+      reset();
+      state = STATE.PLAY;
+      mouse.x = W / 2; mouse.y = H / 2;
+    } else if (state === STATE.OVER) {
+      reset();
+      state = STATE.PLAY;
+      mouse.x = W / 2; mouse.y = H / 2;
+    }
+  }
+  // 锚球跟随鼠标，所以点击/触摸即开始
+  canvas.addEventListener('mousedown', handleAction);
+  canvas.addEventListener('touchstart', e => { handleAction(); }, { passive: true });
+  // 空格也可
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space') { e.preventDefault(); handleAction(); }
+  });
+
+})();
+</script>
+</body>
+</html>
