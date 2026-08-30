@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="accent">#5EC8FF</color>
+    <color name="bg">#05060F</color>
+    <string name="app_name">Tether · 羁绊</string>
+    <style name="Theme.Tether" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">#05060F</item>
+        <item name="android:navigationBarColor">#05060F</item>
+    </style>
+    <style name="Theme.Tether.Fullscreen" parent="Theme.Tether">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+</resources>
