@@ -1,0 +1,32 @@
+============================================================
+  韵律漂移（Harmonic Drift）作品文件完整校验清单
+  著作权人：杨建晟    生成日期：2026-08-30
+============================================================
+
+  ./00.作品创作与独创性说明书.txt                                                    size=6902        sha256=c92706546cd891e51ebf7128ba45ed91b179228c5f02913ab6cb07526cda2bb3
+  ./01.游戏主程序-网页版/harmonic-drift.html                                      size=30949       sha256=55ef3f1e6df344b9ba399204ce25a4f9d067140cb9f82b59f95fdaa9ebb0978d
+  ./02.游戏客户端-Android/APK签名与完整性校验报告.txt                                    size=2568        sha256=8bfdaed91001daab6e8e1221257b4397183264203c93c7d5d57b256e125217cd
+  ./02.游戏客户端-Android/HarmonicDrift-v1.0.0.apk                             size=5635236     sha256=da45ba91d4798b1e23b531d5b0f796f382ba175046719d4e11d0c0fdf71ca1a4
+  ./03.源代码-Android工程/app/build.gradle.kts                                 size=1368        sha256=5b7c21cb3360dcbb28a6c9dd7daf86cadb2c65bf808ec67a0c43c3bf896d5e2b
+  ./03.源代码-Android工程/app/proguard-rules.pro                               size=44          sha256=4d69a3530f3e855b22122eda6f417d0d44016a46605fc5e0661fa900f4c26c00
+  ./03.源代码-Android工程/app/src/main/AndroidManifest.xml                     size=1715        sha256=a3215ba2f04115bc9199779ec8f611aab17a69868e750063062d03fea066b823
+  ./03.源代码-Android工程/app/src/main/assets/www/harmonic-drift.html          size=30949       sha256=55ef3f1e6df344b9ba399204ce25a4f9d067140cb9f82b59f95fdaa9ebb0978d
+  ./03.源代码-Android工程/app/src/main/java/com/harmonicdrift/app/MainActivity.java  size=9287        sha256=8f594cbe551309273542084a2197a8462cf231d4a5c946ddf2df6484c48f8b6f
+  ./03.源代码-Android工程/app/src/main/res/drawable/ic_launcher_background.xml  size=477         sha256=021fa8a752eeb90ef5acc5a037179bf86f8750378fb62ea198818e7537535775
+  ./03.源代码-Android工程/app/src/main/res/drawable/ic_launcher_foreground.xml  size=1802        sha256=298f1c00424bfe247c23a48ad06156e97690a0aec3c89fc951a99ec6959a09e7
+  ./03.源代码-Android工程/app/src/main/res/layout/activity_main.xml            size=504         sha256=7eebe33be55447eae81f4a93062f2200c5888073a42a2200b4093b024f603339
+  ./03.源代码-Android工程/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml   size=341         sha256=d552733f41cabf9a08642e1cdc4d4151a6d832b791b168fa1a5935b4b05b4de6
+  ./03.源代码-Android工程/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml  size=341         sha256=d552733f41cabf9a08642e1cdc4d4151a6d832b791b168fa1a5935b4b05b4de6
+  ./03.源代码-Android工程/app/src/main/res/values-night/themes.xml             size=606         sha256=42b3c716e957c2ff668a2a6822b24740d18e22a0e3d74e5c5eb82449047d8586
+  ./03.源代码-Android工程/app/src/main/res/values/colors.xml                   size=409         sha256=ecb436bac762314616ea90401d24734a8aa4269c8158e94d9d3917cde66f87c2
+  ./03.源代码-Android工程/app/src/main/res/values/strings.xml                  size=129         sha256=fc29bb6028d7454b2d55cdcc310df8f6a3d38458fd3f980f56c0b13fc56009de
+  ./03.源代码-Android工程/app/src/main/res/values/themes.xml                   size=1082        sha256=f53724b71d8895797ffdf836eb21e34934e49626f0f8fc594029cf4e573daa94
+  ./03.源代码-Android工程/app/src/main/res/xml/network_security_config.xml     size=254         sha256=dbc726438a7e99c69fdfc39146cd51ef8300dacb236843bbce3ecd2a1712a80f
+  ./03.源代码-Android工程/build.gradle.kts                                     size=74          sha256=8b29856e8771835f78b26e0630e3789fd94ccf7a4325524010442915d468f217
+  ./03.源代码-Android工程/debug.keystore                                       size=2666        sha256=9afdfb3f01f1e758ebd606982dde2205473f632ea54fa8227526e6b005b01a91
+  ./03.源代码-Android工程/gradle.properties                                    size=573         sha256=bd27ada3c18ddbaf722fd22a7b951df2a9e4bea76ca3f0cdb0913f1579dd9d8c
+  ./03.源代码-Android工程/local.properties                                     size=31          sha256=3a8637689f43aa3caafc47b3cea875300322737de3013fe1236d758e8efef6f1
+  ./03.源代码-Android工程/settings.gradle.kts                                  size=331         sha256=4a83d05f49f54c6ca092749c2ff07f36f0c425137f307d96a395e48eca3f682c
+  ./05.作品文件SHA-256校验清单.txt                                                size=4447        sha256=56641af08427aefb88c19c6e88cf7052b4904a33a33a1b12642bb6f491accf83
+
+============================================================
